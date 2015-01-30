@@ -1,0 +1,93 @@
+#!/usr/bin/env python
+
+'''prune_backups
+
+Prunes/thins your backups within different ranges. For instance you may want to
+keep daily backups for the past week, weekly backups for the past month, and
+monthly backups for the past year.
+
+Usage:
+    prune_backups [--rm] [--pattern=PATTERN] [--quiet] <freqs>...
+
+Options:
+    --rm                Actually remove the backups. By default it just prints
+                        a list of files to remove
+    --pattern=PATTERN   The file pattern to match for your backups.
+                        [default: ./*]
+    --quiet             Suppress output unless there's a problem
+    <freqs>             A list of intervals in days, e.g. `prune_backups 1 7
+                        30` would keep daily backups for the first 7 days,
+                        weekly backups for the first 30, and every 30 days
+                        after that.
+'''
+
+import glob
+import os
+import errno
+import docopt
+import sys
+
+
+def mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError as ex:
+        if ex.errno == errno.EEXIST and os.path.isdir(path):
+            pass
+        else:
+            raise
+
+
+def main(args):
+    # takes a list of backup frequencies in days
+    freqs = [float(f) for f in args['<freqs>']]
+    backup_glob = args['--pattern']
+    should_rm = args['--rm']
+    quiet = args['--quiet']
+    if quiet and not should_rm:
+        print("Argument Error: --quiet suppresses output, " +
+              "but without --rm that's all I do")
+        sys.exit(-1)
+    # we're going to allow 2 hours of slop to account for the fact that backups
+    # won't be taken at the exact same time every day
+    slop_seconds = 2 * 3600
+    freq_seconds = [f*24*3600 - slop_seconds for f in freqs]
+    # backup_glob = '*'
+
+    # sort the backups oldest to newest
+    backups = sorted([(f, os.path.getmtime(f))
+                      for f in glob.glob(backup_glob)],
+                     key=lambda f: f[1])
+    newest = backups[-1][1]
+    # get the age relative to the newest backup
+    backups = [(b[0], newest - b[1]) for b in backups]
+
+    to_delete = []
+    for freqrange in zip([0] + freq_seconds, freq_seconds + [float('inf')]):
+        # the hop is how far apart backups in this range should be
+        hop = freqrange[0]
+        # get the subset of backups within the frequency range
+        range_backups = [b for b in backups
+                         if b[1] >= freqrange[0] and b[1] < freqrange[1]]
+        if len(range_backups) == 0:
+            continue
+        last_kept_age = range_backups[0][1]
+        for backup in range_backups[1:]:
+            if last_kept_age - backup[1] < hop:
+                to_delete.append(backup[0])
+            else:
+                last_kept_age = backup[1]
+
+    if should_rm:
+        for backup in to_delete:
+            if not quiet:
+                print("Deleting %s..." % backup)
+            os.remove(backup)
+    else:
+        for backup in to_delete:
+            print(backup)
+
+
+if __name__ == '__main__':
+    args = docopt.docopt(__doc__)
+    main(args)
